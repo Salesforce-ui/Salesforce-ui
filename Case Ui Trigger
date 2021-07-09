@@ -1,0 +1,151 @@
+/**
+* Created Date: May 13, 2021
+* Created By: Jethin Mandava - (P1&P2&P3)
+* Purpose: Case UI - Jira Epic Link-ITGM-4603 - STRY0010147
+*/
+
+/*P1:Case Status Automation for Picklist values (Assigned && Unassigned) based on Case Owner*/
+public class CaseTrigger_Handler {
+    
+    public static void statusAutomation(List<Case> lstCases,Map<Id,Case> oldMap){
+        
+        List<String> recordtypes = Label.Sales_Support_Recordtypes.split(',');
+        Map<Id,Recordtype> recordtypesMap = new Map<Id,Recordtype>([Select Id,Name,DeveloperName from Recordtype where Name IN:recordtypes]);
+        
+        for(Case cs:lstCases){
+            
+            Boolean executeRule = false;
+            if(oldMap == null || oldMap.get(cs.Id).OwnerId != cs.OwnerId){
+                executeRule = true;
+            }
+            
+            if(recordtypesMap.containsKey(cs.RecordTypeId) && executeRule){
+                
+                String ownerId = cs.OwnerId;
+                if(ownerId.startsWith('00G')){
+                    if(cs.Date_Time_Assigned__c != null) {
+                        cs.Date_Time_Assigned__c = null;
+                    }
+                    if(cs.Status != 'Unassigned') {
+                    	cs.Status = 'Unassigned'; 
+                    }
+                }else if(ownerId.startsWith('005') && cs.Status != 'Assigned'){
+                    cs.Status = 'Assigned';
+                    cs.Date_Time_Assigned__c = Datetime.now();
+                }
+            }
+        }
+    }
+   
+/*P2:Case Secondary Owner field Automation*/
+    public static void populateCaseTeams(List<Case> lstCases,Map<Id,Case> oldMap){
+        
+        Map<Id,Id> shareownerIds = new Map<Id,Id>();
+        Map<Id,Id> removeownerIds = new Map<Id,Id>();
+        List<CaseTeamRole> lstRoles = [select Id from CaseTeamRole where Name = :'Secondary Owner' limit 1];
+
+        for(Case cs:lstCases){
+            
+            if(cs.Secondary_Case_Owner__c != null && oldMap == null){
+                shareownerIds.put(cs.Secondary_Case_Owner__c,cs.Id);
+            }else if(oldMap != null && oldMap.get(cs.Id).Secondary_Case_Owner__c != cs.Secondary_Case_Owner__c){
+                
+                if(cs.Secondary_Case_Owner__c != null){
+                    shareownerIds.put(cs.Secondary_Case_Owner__c,cs.Id);                   
+                }
+                
+                if(oldMap.get(cs.Id).Secondary_Case_Owner__c != null){
+                    removeownerIds.put(oldMap.get(cs.Id).Secondary_Case_Owner__c,cs.Id);
+                }
+            }            
+        }
+        
+        system.debug('removeownerIds==='+removeownerIds);
+        system.debug('lstRoles==='+lstRoles);
+        if(!removeownerIds.isEmpty() && !lstRoles.isEmpty()){
+            
+            List<CaseTeamMember> lstCaseTeams = [Select Id,ParentId,MemberId from CaseTeamMember Where ParentId In:removeownerIds.values() AND 
+                                                MemberId IN:removeownerIds.keyset() AND TeamRoleId =:lstRoles[0].Id];
+            system.debug('lstCaseTeams==='+lstCaseTeams);
+            if(!lstCaseTeams.isEmpty()){
+                delete lstCaseTeams;
+            }
+        }
+        
+        system.debug('shareownerIds==='+shareownerIds);
+        system.debug('lstRoles==='+lstRoles);
+        if(!shareownerIds.isEmpty() && !lstRoles.isEmpty()){
+            List<CaseTeamMember> CaseTeamMembers = new List<CaseTeamMember>();
+            List<CaseTeamMember> lstCaseTeams = [Select Id,ParentId,MemberId from CaseTeamMember Where ParentId In:shareownerIds.values() AND 
+                                                MemberId IN:shareownerIds.keyset() AND TeamRoleId =:lstRoles[0].Id];
+            
+            Map<Id,Id> duplicateDataVerification = new Map<Id,Id>();
+            for(CaseTeamMember ct:lstCaseTeams){    
+                duplicateDataVerification.put(ct.ParentId,ct.MemberId);
+            }
+            system.debug('duplicateDataVerification==='+duplicateDataVerification);
+            
+            for(Id Key:shareownerIds.keyset()){
+                system.debug('key==='+shareownerIds.get(key));
+            
+                if(!duplicateDataVerification.containsKey(shareownerIds.get(key))){
+                    CaseTeamMembers.add(frameCaseTeamMember(shareownerIds.get(key),key,lstRoles[0].Id)); 
+                    duplicateDataVerification.put(shareownerIds.get(key),key);
+                }
+                
+            }
+            if(!CaseTeamMembers.isEmpty()){
+                insert CaseTeamMembers;
+            }
+        }
+    }
+    
+    public static CaseTeamMember frameCaseTeamMember(String caseId,String ownerId,String teamRoleId){
+        CaseTeamMember CTM = new CaseTeamMember();
+        CTM.ParentId = caseId;
+        CTM.MemberId = ownerId;
+        CTM.TeamRoleId = teamRoleId;
+        return CTM;
+    }
+    
+/*P3:Blocking Assigning case when OOO Functionality is on User*/
+    public static void outOfOfficeValidation(List<Case> lstCases,Map<Id,Case> oldMap){
+        
+        List<String> recordtypes = Label.OOO_Recordtypes.split(',');
+        Map<Id,Recordtype> recordtypesMap = new Map<Id,Recordtype>([Select Id,Name,DeveloperName from Recordtype where Name IN:recordtypes]);
+        set<Id> ownerIds = new Set<Id>();
+        
+        for(Case cs:lstCases){
+            if(recordtypesMap.containsKey(cs.RecordtypeId)){
+                
+                if(oldMap != null && cs.OwnerId != oldMap.get(cs.Id).OwnerId){
+                	ownerIds.add(cs.ownerId);
+                }else if(oldMap == null){
+                    ownerIds.add(cs.ownerId);
+                }
+                
+            }            
+        }
+        system.debug('ownerIds='+ownerIds);
+        if(!ownerIds.isEmpty()){
+            
+            List<OutOfOffice> lstOutOfOffice = [Select Id,StartDate,EndDate,IsEnabled,USerId from OutOfOffice where IsEnabled =:true AND userId IN:ownerIds];
+            
+            system.debug('lstOutOfOffice==='+lstOutOfOffice);
+            if(!lstOutOfOffice.isEmpty()){
+
+                for(Case cs:lstCases){
+                    if(recordtypesMap.containsKey(cs.RecordtypeId)){
+                        for(OutOfOffice ou:lstOutOfOffice){
+                            if(ou.userId == cs.OwnerId && ou.StartDate.Date() <= Date.today() && ou.EndDate.Date() >= Date.today()){
+                                cs.addError('You cannot assign the case to this user as they are Out of Office');  
+                                
+                            }
+                        } 
+                    }
+                }
+            }
+        }
+    }
+
+}
